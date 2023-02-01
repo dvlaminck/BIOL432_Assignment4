@@ -1,0 +1,214 @@
+---
+title: "20180542_A4"
+output: html_document
+date: "`r Sys.Date()`"
+---
+Inputting dataset and importing necessary packages
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tree)
+library(rpart)
+library(gbm)
+library(randomForest)
+source("http://bit.ly/theme_pub")
+setwd("/Users/darahvlaminck/Desktop/BIOL432/Assignment 4/BIOL432_Assignment4")
+Biopsy <- read.csv("Cohen_CANCERSEEK_liquid_biopsy_2018.csv")
+```
+
+Inspecting the data:
+```{r}
+head(Biopsy)
+```
+```{r}
+dim(Biopsy)
+```
+```{r}
+tail(Biopsy)
+```
+```{r}
+summary(Biopsy)
+```
+```{r}
+str(Biopsy)
+```
+
+Since it is a big dataframe, I will use the colSums() function to determine whether there is any missing data:
+```{r}
+noNA<-names(Biopsy[,colSums(is.na(Biopsy))>0])
+print(noNA)
+```
+
+See how many are missing from each column:
+```{r}
+colSums(is.na(Biopsy))
+```
+For the purposes of this assignment, this is ok! There is very minimal data missing and therefore it should not affect our decision tree. However, we will come back to this for our random forest.
+
+Based on analyzing the data, it looks like there may be a few outliers within the dataset. I will plot the distributions of features that I am concerned about:
+```{r}
+ggplot() + geom_histogram(data=Biopsy, aes(x=TGFa)) + xlab("Concentration") + ylab("Count")
+```
+```{r}
+ggplot() + geom_histogram(data=Biopsy, aes(x=AFP)) + xlab("Concentration") + ylab("Count")
+```
+```{r}
+ggplot() + geom_histogram(data=Biopsy, aes(x=G_CSF)) + xlab("Concentration") + ylab("Count")
+```
+```{r}
+ggplot() + geom_histogram(data=Biopsy, aes(x=IL_6)) + xlab("Concentration") + ylab("Count")
+```
+Clearly, the few outliers in the dataset are heavily skewing the data. However, because the data does not need to be normalized (as we aren't looking at the absolute values), this should not impact our decision trees heavily. Therefore, I have decided to leave the dataset as is.
+
+We do not need to normalize this data when running a decision tree or a random forest because it is a tree based model. When doing our other machine learning techniques, we normalized the data to ensure that one feature was not prioritized over the other. However, tree based models are not distance-based, but rather looks at splitting the features. These models only care about the order of the values, so they are not impacted by skewed data as other models (which rely on the absolute values).
+
+Dimensions of final dataframe:
+```{r}
+dim(Biopsy)
+```
+```{r}
+Tumors <- Biopsy %>%
+  count(Tumor_type)
+print(Tumors)
+```
+From this chart, we can see that there are 800 normal samples.
+
+```{r}
+Cancer <- Tumors[Tumors$Tumor_type !="Normal", ] #removing normal observations from dataset
+sum(Cancer$n)
+```
+From this, we can determine that there are 1004 tumor samples.
+
+Splitting the dataset into a training and validation set:
+```{r}
+Rows<-c(1:nrow(Biopsy))
+Train<-Rows %% 2 == 1
+Validate<-Rows %% 2 == 0
+```
+```{r}
+head(Biopsy[Train,])
+```
+```{r}
+head(Biopsy[Validate,])
+```
+
+Converting Tumor_type from a categorical variable to a factor:
+```{r}
+Biopsy$Tumor_type <- as.factor(Biopsy$Tumor_type)
+class(Biopsy$Tumor_type)
+```
+
+Creating a dataset with just the response and predictor variables:
+```{r}
+Biopsy1 <- Biopsy %>%
+  select(-c(Patient_ID,Sample_ID))
+head(Biopsy1)
+```
+
+Running decision tree:
+```{r}
+DTree <- tree(Tumor_type ~ ., data=Biopsy1[Train,])
+plot(DTree)
+text(DTree, cex=0.5,adj=0)
+```
+Based off this decision tree, we can see that IL_8 is the most influential protein feature for classifying samples.
+
+Creating a confusion matrix:
+```{r}
+CMatrix<-data.frame(Obs=Biopsy1$Tumor_type[Train],Pred=predict(DTree, Biopsy1[Train,], type="class"))
+table(CMatrix)
+```
+
+Misclassification rate:
+```{r}
+summary(DTree)
+```
+
+Based on these metrics, we can see that the model is very good at classifying normal tissue, and colorectum. However, the model is not very good at identifying breast cancer, ovary cancer, or lung cancer. The misclassification rate is relatively high for this model, indicating that there is some room for improvement.
+
+Now we will run a random forest. But first, we have to remove the missing data so the random forest will run:
+```{r}
+noNA<-complete.cases(Biopsy1)
+newData<- Biopsy1[ which(Train | noNA) , ]
+dim(newData)
+```
+
+```{r}
+Forest<-randomForest(Tumor_type ~ ., data=newData,ntree=250, mtry=10, nodesize=8, importance=TRUE)
+Forest
+```
+
+```{r}
+Forest$importance
+```
+
+Based on the misclassification rates (and confusion matrix), we can see that the random forest allowed us to classify samples more accurately. The misclassification rate for the decision tree was ~30%, while the random forest misclassification rate was ~20%. There was also an improvement in the false negatives/positives, as seen in the confusion matrix.
+
+```{r}
+PopBoost<-gbm(Tumor_type ~ ., data=newData,distribution="gaussian",n.trees = 25, interaction.depth=2, cv.folds=12)
+PopBoost
+```
+```{r}
+summary(PopBoost)
+```
+The protein feature that is most influential for classifying tumor is TGFa, which differs from our decision tree model.
+
+Creating cancer vs normal table:
+```{r}
+Biopsy2 <- newData %>% #Using the new dataset I made with NAs removed and the training dataset
+  mutate(binary = ifelse(Tumor_type == "Normal", print("Normal"), print("Cancer"))) %>%
+  select(binary, everything()) %>%
+  select(-c(Tumor_type))
+tail(Biopsy2)
+```
+Used dplyr with new dataframe where NAs are already removed and it is based on a training set!
+
+Making sure it is a factor:
+```{r}
+Biopsy2$binary <- as.factor(Biopsy2$binary)
+class(Biopsy2$binary)
+```
+
+```{r}
+Forest1 <-randomForest(binary ~ ., data=Biopsy2,ntree=250, mtry=10, nodesize=8, importance=TRUE)
+Forest1
+```
+```{r}
+PopBoost1<-gbm(binary ~ ., data=Biopsy2,distribution="gaussian",n.trees = 25, interaction.depth=2, cv.folds=12)
+PopBoost1
+```
+```{r}
+summary(PopBoost1)
+```
+From this figure, we can see that the top two features for differentiating between samples with and without cancer are IL_8 and IL_6.
+
+Running the model on our validation set:
+```{r}
+newData1 <- Biopsy1 %>%
+  filter(row_number() %% 2 == 0) #Only including even rows (validation set)
+tail(newData1)
+```
+
+```{r}
+noNA1<-complete.cases(newData1) #Dropping missing data observations
+```
+```{r}
+Biopsy3 <- newData1 %>% #Creating binary column + getting rid of tumor_type
+  mutate(binary = ifelse(Tumor_type == "Normal", print("Normal"), print("Cancer"))) %>%
+  select(binary, everything()) %>%
+  select(-c(Tumor_type))
+head(Biopsy3)
+```
+```{r}
+Biopsy3$binary <- as.factor(Biopsy3$binary)
+class(Biopsy3$binary)
+```
+
+```{r}
+Forest2 <-randomForest(binary ~ ., data=Biopsy3[noNA1,],ntree=250, mtry=10, nodesize=8, importance=TRUE)
+Forest2
+```
+
+IL_8 and IL_6 are both cytokines, which are very important in the tumor microenvironment. Specifically, cancer cells are able to secrete IL_8 to improve the growth and survival of cancer cells. Alternatively, IL_6 is downregulated by cancer cells because it inhibits their growth and survival. Therefore, with cancer cells being able to heavily influence the secretion of these compounds, they are very important in the immune response. It seems very logical that based on the concentrations of these compounds within a sample, it is indicative of whether there is a presence of cancer. 
+
+Based on the confusion matrix for this model, we are able to calculate the random tree performance. This model had an accuracy of 97%, sensitivity of 96%, and specificity of 97%. Additionally, the error rate was 3.49% which is quite low. Based on these metrics, I would determine that this model is useful for detecting the presence of cancer. However, it is important to note that the model performed slighly worse on the validation dataset. Specifically, the error rate was 5.66%, the random forest accuracy, sensitivity, and specificity were all 94% (based on the confusion matrix). However, our validation dataset was slightly smaller and these are still high random forest performance metrics; therefore, I would say the validation set supports the idea that the model is good for detecting cancer. 
